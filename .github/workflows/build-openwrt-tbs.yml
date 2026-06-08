@@ -1,92 +1,113 @@
-name: Build OpenWrt 22.03 with Full TBS DVB Drivers
+name: Build OpenWrt 22.03 with TBS DVB Drivers
 
 on:
-  workflow_dispatch:          # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      # 1. 安装编译依赖
       - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential libncurses5-dev gawk git subversion gettext libssl-dev zlib1g-dev file unzip python3 python3-distutils
-          # 额外安装 ccache 加速二次编译（可选）
-          sudo apt install -y ccache
+          sudo apt install -y build-essential libncurses5-dev gawk git subversion gettext libssl-dev zlib1g-dev file unzip python3 python3-distutils ccache
 
-      # 2. 克隆 OpenWrt 22.03 源码（浅克隆加速）
       - name: Clone OpenWrt source
         run: git clone -b openwrt-22.03 --depth 1 https://github.com/openwrt/openwrt.git openwrt
 
-      # 3. 添加 TBS 官方 feed（提供全系列 DVB 驱动）
-      - name: Add TBS feed
+      - name: Update feeds
         run: |
           cd openwrt
-          echo "src-git tbs https://github.com/tbsdtv/openwrt-feed.git" >> feeds.conf.default
-          ./scripts/feeds update tbs
+          ./scripts/feeds update -a
           ./scripts/feeds install -a
-          # 安装 tbs-tuners 包（全系列驱动）
-          ./scripts/feeds install tbs-tuners
 
-      # 4. 启用内核 DVB 核心支持（通过修改内核配置文件）
+      # 手动集成 TBS 驱动源码（不使用 feed，避免认证问题）
+      - name: Add TBS driver source manually
+        run: |
+          cd openwrt/package/kernel
+          mkdir -p tbs-driver/src
+          cd tbs-driver/src
+          git clone --depth 1 https://github.com/tbsdtv/linux_media.git .
+          cd ..
+          cat > Makefile << 'EOF'
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=tbs-driver
+PKG_VERSION:=20240301
+PKG_RELEASE:=1
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/tbsdtv/linux_media.git
+PKG_SOURCE_VERSION:=master
+PKG_SOURCE_LOCAL:=1
+
+include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/kernel.mk
+
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	cp -r ./src/* $(PKG_BUILD_DIR)/
+endef
+
+define KernelPackage/tbs-driver
+  SUBMENU:=Video Support
+  TITLE:=TBS DVB drivers
+  DEPENDS:=+kmod-i2c-core +kmod-i2c-algo-bit
+  FILES:=$(PKG_BUILD_DIR)/drivers/media/**/*.ko
+  AUTOLOAD:=$(call AutoProbe, $(AUTOLOAD_MODS))
+endef
+
+define Build/Compile
+	$(MAKE) -C "$(LINUX_DIR)" \
+		ARCH="$(LINUX_KARCH)" \
+		CROSS_COMPILE="$(TARGET_CROSS)" \
+		M="$(PKG_BUILD_DIR)/drivers/media" \
+		modules
+endef
+
+$(eval $(call KernelPackage,tbs-driver))
+EOF
+
       - name: Enable DVB kernel support
         run: |
           cd openwrt
           KERNEL_CONFIG="target/linux/x86/config-5.10"
-          # 必要选项
           echo "CONFIG_MEDIA_SUPPORT=y" >> $KERNEL_CONFIG
           echo "CONFIG_MEDIA_DIGITAL_TV_SUPPORT=y" >> $KERNEL_CONFIG
           echo "CONFIG_DVB_CORE=y" >> $KERNEL_CONFIG
           echo "CONFIG_I2C=y" >> $KERNEL_CONFIG
           echo "CONFIG_I2C_DEVICE=y" >> $KERNEL_CONFIG
-          # 增加 PCI 支持（TBS 卡多为 PCIe）
-          echo "CONFIG_PCI=y" >> $KERNEL_CONFIG
 
-      # 5. 配置 OpenWrt 固件（x86_64，启用 TBS 驱动，增大根分区）
       - name: Configure firmware
         run: |
           cd openwrt
-          # 生成默认配置
           make defconfig
-          # 使用 scripts/config 修改配置（非交互）
           scripts/config --set-val CONFIG_TARGET_x86 y
           scripts/config --set-val CONFIG_TARGET_x86_64 y
           scripts/config --set-val CONFIG_TARGET_x86_64_GENERIC y
-          scripts/config --set-str CONFIG_TARGET_ROOTFS_PARTSIZE 1024   # 1GB 根分区
-          # 启用 TBS 全系列驱动包
-          scripts/config --enable CONFIG_PACKAGE_kmod-tbs-tuners
-          # 可选：添加常用软件包（如 luci, tvheadend, minisatip）
+          scripts/config --set-str CONFIG_TARGET_ROOTFS_PARTSIZE 1024
+          scripts/config --enable CONFIG_PACKAGE_kmod-tbs-driver
+          scripts/config --enable CONFIG_PACKAGE_kmod-e1000e
+          scripts/config --enable CONFIG_PACKAGE_kmod-igb
+          scripts/config --enable CONFIG_PACKAGE_kmod-r8169
           scripts/config --enable CONFIG_PACKAGE_luci
           scripts/config --enable CONFIG_PACKAGE_luci-base
-          scripts/config --enable CONFIG_PACKAGE_luci-ssl
-          scripts/config --enable CONFIG_PACKAGE_tvheadend
-          scripts/config --enable CONFIG_PACKAGE_minisatip
-          scripts/config --enable CONFIG_PACKAGE_dvb-apps
-          # 重新生成最终 .config
           make defconfig
 
-      # 6. 下载所有软件包源码（避免编译时网络中断）
       - name: Download package sources
         run: |
           cd openwrt
           make download -j$(nproc)
 
-      # 7. 编译完整固件（使用 ccache 加速，详细日志）
       - name: Build firmware
         run: |
           cd openwrt
-          # 如果有 ccache，设置缓存目录
-          export CCACHE_DIR="$HOME/.ccache"
           make -j$(nproc) V=s
 
-      # 8. 上传编译产物（固件 + 驱动 .ipk 包）
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-22.03-tbs-full
+          name: openwrt-22.03-tbs-driver
           path: |
             openwrt/bin/targets/x86/64/*.img
             openwrt/bin/targets/x86/64/*.img.gz
-            openwrt/bin/packages/x86_64/base/kmod-tbs-tuners*.ipk
-            openwrt/bin/packages/x86_64/base/*.ipk   # 其他可能相关的驱动包
+            openwrt/bin/packages/x86_64/base/kmod-tbs-driver*.ipk
