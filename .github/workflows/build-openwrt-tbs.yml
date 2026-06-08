@@ -21,7 +21,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 手动集成 TBS 驱动源码（不使用 feed，避免认证问题）
       - name: Add TBS driver source manually
         run: |
           cd openwrt/package/kernel
