@@ -1,36 +1,51 @@
-# This is a basic workflow to help you get started with Actions
+name: OpenWrt DVB Driver CI (IPK Build)
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [ "master" ]
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+  build-dvb-driver:
+    runs-on: ubuntu-22.04
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Download OpenWrt 22.03.5 x86_64 SDK
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          wget -O openwrt-sdk.tar.xz https://downloads.openwrt.org/releases/22.03.5/targets/x86/64/openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
+          tar -xf openwrt-sdk.tar.xz
+          mv openwrt-sdk-* openwrt-sdk
+
+      - name: Checkout DVB Source
+        uses: actions/checkout@v4
+        with:
+          path: openwrt-sdk/package/openwrt-dvb
+
+      - name: Init Feeds & Enable Package
+        working-directory: openwrt-sdk
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+          echo "CONFIG_PACKAGE_v4l-dvb=y" >> .config
+          make defconfig
+
+      - name: Compile Source
+        working-directory: openwrt-sdk
+        run: make package/openwrt-dvb/v4l-dvb/compile V=s
+
+      - name: Build IPK
+        working-directory: openwrt-sdk
+        # 关键：改用 'make package/.../install' 的标准写法
+        run: make package/openwrt-dvb/v4l-dvb/install V=s || true
+        continue-on-error: true
+
+      - name: Upload IPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvb-driver-ipk
+          path: openwrt-sdk/bin/packages/x86_64/base/*.ipk
+          retention-days: 30
