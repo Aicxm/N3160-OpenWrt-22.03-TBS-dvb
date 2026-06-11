@@ -1,4 +1,4 @@
-name: OpenWrt DVB + Oscam CI
+name: OpenWrt TBS DVB Driver CI
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -22,25 +22,27 @@ jobs:
         with:
           path: openwrt-sdk/package/openwrt-dvb
 
-      - name: Init feeds & config
+      - name: Debug: Verify package path
+        working-directory: openwrt-sdk
+        run: |
+          ls -la package/openwrt-dvb/
+          ls -la package/openwrt-dvb/V4L-DVB/
+
+      - name: Init feeds & register packages
         working-directory: openwrt-sdk
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           make defconfig
 
-      # 关键：使用正确的包路径 V4L-DVB，同时添加 Oscam 编译
-      - name: Clean & Compile
+      - name: Compile driver (only TBS, no Oscam for now)
         working-directory: openwrt-sdk
         run: |
-          # 编译 TBS 驱动（V4L-DVB）
           make -C package/openwrt-dvb/V4L-DVB clean compile install V=s
-          # 编译 Oscam（可选）
-          make -C package/openwrt-dvb/奥斯卡姆 clean compile install V=s
 
       - name: Upload IPK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dvb-oscam-ipk
+          name: tbs-dvb-ipk
           path: openwrt-sdk/bin/packages/x86_64/base/*.ipk
           retention-days: 30
